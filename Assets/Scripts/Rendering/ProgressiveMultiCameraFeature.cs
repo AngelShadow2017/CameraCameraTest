@@ -3,178 +3,85 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.Rendering.RenderGraphModule;
 
-namespace Rendering
+public class ProgressiveMultiCameraFeature : ScriptableRendererFeature
 {
-    /// <summary>
-    /// 渐进式多相机渲染Feature
-    /// 将前一个相机的渲染结果作为当前相机的"背景板"
-    /// 使用RenderGraph API实现
-    /// </summary>
-    public class ProgressiveMultiCameraFeature : ScriptableRendererFeature
+    class ProgressiveBackgroundPass : ScriptableRenderPass
     {
-        [System.Serializable]
-        public class Settings
+        private readonly ProfilingSampler m_Profiler = new ProfilingSampler("ProgressiveBackground");
+        private Material m_BlitMaterial;
+
+        // RenderGraph 传递的数据
+        private class PassData
         {
-            [Tooltip("在哪个阶段注入Pass")]
-            public RenderPassEvent renderPassEvent = RenderPassEvent.BeforeRenderingOpaques;
-            
-            [Tooltip("是否启用调试日志")]
-            public bool enableDebugLog = false;
+            public TextureHandle source;      // 上一相机的最终颜色（通过 ImportTexture）
+            public TextureHandle destination; // 当前相机的 activeColorTexture
+            public Material blitMat;
         }
 
-        public Settings settings = new Settings();
-        private ProgressiveMultiCameraPass renderPass;
-
-        public override void Create()
+        public ProgressiveBackgroundPass()
         {
-            renderPass = new ProgressiveMultiCameraPass(settings);
-            renderPass.renderPassEvent = settings.renderPassEvent;
+            // 使用引擎自带Blit材质（你也可以用自定义纯拷贝材质）
+            m_BlitMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/BlitCopy"));
+            // 在不清除目标的情况下直接覆盖像素，这样相机的背景就来自上一相机
+            renderPassEvent = RenderPassEvent.BeforeRenderingOpaques;
         }
 
-        public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
+        public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
         {
-            // 只在Game相机或Scene相机上生效
-            if (renderingData.cameraData.cameraType != CameraType.Game && 
-                renderingData.cameraData.cameraType != CameraType.SceneView)
-                return;
+            var cameraData = frameData.Get<UniversalCameraData>();
+            var resourceData = frameData.Get<UniversalResourceData>();
 
-            Camera currentCamera = renderingData.cameraData.camera;
-            
-            // 检查当前相机是否在某个CameraChain中
-            if (!CameraChainManager.IsFirstCameraStatic(currentCamera))
+            var cam = cameraData.camera;
+            if (cam == null) return;
+            if (!ProgressiveCameraTag.IsProgressive(cam)) return;
+
+            // 第一台参与链的相机没有"上一输出"，直接跳过
+            if (!CameraChainManager.HasLastOutputThisFrame()) return;
+
+            // 导入上一相机结果作为 RG 的输入纹理
+            var lastRT = CameraChainManager.GetLastOutputRT();
+            if (lastRT == null) return;
+
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>("ProgressiveBackground", out var passData, m_Profiler))
             {
-                // 不是第一个相机，需要应用前一个相机的输出作为背景
-                Camera previousCamera = CameraChainManager.GetPreviousCameraStatic(currentCamera);
-                
-                if (previousCamera != null)
+                passData.source = renderGraph.ImportTexture(lastRT);
+                passData.destination = resourceData.activeColorTexture;
+                passData.blitMat = m_BlitMaterial;
+
+                builder.UseTexture(passData.source, AccessFlags.Read);
+                builder.SetRenderAttachment(passData.destination, 0);
+
+                // 全屏拷贝：把上一相机结果写到当前的activeColorTexture
+                builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
                 {
-                    // 从CameraCaptureFeature获取前一个相机的输出
-                    RTHandle previousOutput = CameraCaptureFeature.GetCameraOutput(previousCamera);
+                    // 分析：不需要手动设置RenderTarget，因为SetRenderAttachment已经自动设置了
+                    // RenderGraph会自动将目标纹理绑定到渲染管线的当前渲染目标
                     
-                    if (previousOutput != null)
-                    {
-                        renderPass.Setup(currentCamera, previousCamera, previousOutput);
-                        renderer.EnqueuePass(renderPass);
-                        
-                        if (settings.enableDebugLog)
-                        {
-                            Debug.Log($"[ProgressiveMultiCamera] Enqueued pass for camera '{currentCamera.name}' " +
-                                      $"(previous: '{previousCamera.name}')");
-                        }
-                    }
-                    else if (settings.enableDebugLog)
-                    {
-                        Debug.LogWarning($"[ProgressiveMultiCamera] Previous camera '{previousCamera.name}' " +
-                                         $"has no captured output yet");
-                    }
-                }
+                    // 直接进行全屏复制
+                    Blitter.BlitTexture(ctx.cmd, data.source, new Vector4(1, 1, 0, 0), data.blitMat, 0);
+                });
             }
         }
 
-        protected override void Dispose(bool disposing)
+        protected void Dispose(bool disposing)
         {
-            renderPass?.Dispose();
+            CoreUtils.Destroy(m_BlitMaterial);
         }
+    }
 
-        private class ProgressiveMultiCameraPass : ScriptableRenderPass
+    ProgressiveBackgroundPass m_Pass;
+
+    public override void Create()
+    {
+        m_Pass = new ProgressiveBackgroundPass();
+    }
+
+    public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
+    {
+        var cam = renderingData.cameraData.camera;
+        if (cam != null && ProgressiveCameraTag.IsProgressive(cam))
         {
-            private Settings settings;
-            private Camera currentCamera;
-            private Camera previousCamera;
-            private RTHandle previousOutput;
-
-            private const string profilerTag = "Progressive Multi-Camera Composite";
-            private static readonly int s_PreviousFrameID = Shader.PropertyToID("_PreviousCameraOutput");
-
-            public ProgressiveMultiCameraPass(Settings settings)
-            {
-                this.settings = settings;
-            }
-
-            public void Setup(Camera currentCamera, Camera previousCamera, RTHandle previousOutput)
-            {
-                this.currentCamera = currentCamera;
-                this.previousCamera = previousCamera;
-                this.previousOutput = previousOutput;
-            }
-
-            public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
-            {
-                UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
-                UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
-
-                // 如果没有前一个相机的输出，跳过
-                if (previousOutput == null)
-                {
-                    if (settings.enableDebugLog)
-                    {
-                        Debug.LogWarning($"[ProgressiveMultiCamera] No previous camera output for '{currentCamera.name}'");
-                    }
-                    return;
-                }
-
-                // 创建Pass Data
-                using (var builder = renderGraph.AddRasterRenderPass<PassData>(profilerTag, out var passData))
-                {
-                    // 设置Pass Data
-                    passData.previousCameraOutput = previousOutput;
-                    passData.cameraData = cameraData;
-
-                    // 导入前一个相机的纹理
-                    TextureHandle previousTexture = renderGraph.ImportTexture(previousOutput);
-                    passData.previousTextureHandle = previousTexture;
-
-                    // 获取当前相机的颜色目标
-                    TextureHandle cameraColor = resourceData.activeColorTexture;
-                    passData.cameraColorHandle = cameraColor;
-
-                    // 设置渲染目标
-                    builder.SetRenderAttachment(cameraColor, 0);
-                    
-                    // 读取前一个相机的输出
-                    builder.UseTexture(previousTexture, AccessFlags.Read);
-
-                    // 设置渲染函数 - 使用static lambda避免内存分配
-                    builder.SetRenderFunc(static (PassData data, RasterGraphContext context) =>
-                    {
-                        ExecutePass(data, context);
-                    });
-
-                    if (settings.enableDebugLog)
-                    {
-                        Debug.Log($"[ProgressiveMultiCamera] RenderGraph pass recorded for '{currentCamera.name}'");
-                    }
-                }
-            }
-
-            private static void ExecutePass(PassData data, RasterGraphContext context)
-            {
-                // 从TextureHandle获取实际的RTHandle
-                RTHandle previousRT = (data.previousTextureHandle);
-                
-                // 将前一个相机的输出Blit到当前相机的颜色缓冲（已设置为渲染目标）
-                // 这样就相当于把前一个相机的结果作为"背景板"
-                Blitter.BlitTexture(
-                    context.cmd,
-                    previousRT,
-                    new Vector4(1, 1, 0, 0), // scale and bias
-                    0, // mipLevel
-                    false // bilinear
-                );
-            }
-
-            public void Dispose()
-            {
-                // 清理资源
-            }
-
-            private class PassData
-            {
-                public RTHandle previousCameraOutput;
-                public UniversalCameraData cameraData;
-                public TextureHandle previousTextureHandle;
-                public TextureHandle cameraColorHandle;
-            }
+            renderer.EnqueuePass(m_Pass);
         }
     }
 }

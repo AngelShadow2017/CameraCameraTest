@@ -15,6 +15,19 @@ MonoBehaviour:
   m_Active: 1
   settings:
     enableDebugLog: 0
+--- !u!114 &-2413668918783745157
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: baea3e0cfe714554883e6691acc079ad, type: 3}
+  m_Name: ProgressiveMultiCameraFeature
+  m_EditorClassIdentifier: Assembly-CSharp::ProgressiveMultiCameraFeature
+  m_Active: 1
 --- !u!114 &-855503243364788841
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -57,9 +70,9 @@ MonoBehaviour:
     probeVolumeBlendStatesCS: {fileID: 7200000, guid: b9a23f869c4fd45f19c5ada54dd82176, type: 3}
   m_RendererFeatures:
   - {fileID: 7833122117494664109}
-  - {fileID: -855503243364788841}
-  - {fileID: -4841147863405607688}
-  m_RendererFeatureMap: ad6b866f10d7b46c97150c3355a420f4f84491f0aac9d0bc
+  - {fileID: -2413668918783745157}
+  - {fileID: 2176897578988822216}
+  m_RendererFeatureMap: ad6b866f10d7b46c7b637e12e8ec80dec85e097cd0e4351e
   m_UseNativeRenderPass: 1
   xrSystemData: {fileID: 0}
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
@@ -104,6 +117,19 @@ MonoBehaviour:
   passEvent: 1000
   compositeShader: {fileID: 4800000, guid: 7f3e8c9a2b4d5e6f1a2b3c4d5e6f7a8b, type: 3}
   _blendMaterial: {fileID: 0}
+--- !u!114 &2176897578988822216
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 805bccb6ab4e46d8a91f1f1b101e5576, type: 3}
+  m_Name: CameraCaptureFeature
+  m_EditorClassIdentifier: Assembly-CSharp::CameraCaptureFeature
+  m_Active: 1
 --- !u!114 &7833122117494664109
 MonoBehaviour:
   m_ObjectHideFlags: 0

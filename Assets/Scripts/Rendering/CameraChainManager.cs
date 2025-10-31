@@ -1,275 +1,151 @@
-using UnityEngine;
 using System.Collections.Generic;
 using System.Linq;
+using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Experimental.Rendering;
 
-namespace Rendering
+public static class CameraChainManager
 {
-    /// <summary>
-    /// 管理多个相机的渲染顺序和层级关系
-    /// 每个相机将在前一个相机的渲染结果上继续渲染（渐进式渲染）
-    /// </summary>
-    public class CameraChainManager : MonoBehaviour
+    // 当前帧内参与链的标签集合
+    private static readonly HashSet<ProgressiveCameraTag> s_Tags = new HashSet<ProgressiveCameraTag>();
+
+    // 跨 Camera 持久的颜色结果（上一相机的最终输出）
+    private static UnityEngine.Rendering.RTHandle s_LastOutputRT;
+
+    // 记录分配参数，避免重复分配
+    private static int s_Width, s_Height;
+    private static GraphicsFormat s_ColorFormat;
+    private static int s_MSAA;
+    private static bool s_InitedFrame = false;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void Init()
     {
-        [System.Serializable]
-        public class CameraEntry
+        ResetState();
+        RenderPipelineManager.beginFrameRendering += OnBeginFrameRendering;
+        RenderPipelineManager.endFrameRendering += OnEndFrameRendering;
+    }
+
+    public static void Register(ProgressiveCameraTag tag)
+    {
+        s_Tags.Add(tag);
+        SortAndAssignDepth();
+    }
+
+    public static void Unregister(ProgressiveCameraTag tag)
+    {
+        s_Tags.Remove(tag);
+        SortAndAssignDepth();
+    }
+
+    public static bool IsCameraInChain(Camera cam)
+    {
+        if (!cam) return false;
+        foreach (var t in s_Tags)
         {
-            [Tooltip("要渲染的相机")]
-            public Camera camera;
-            
-            [Tooltip("是否启用该相机")]
-            public bool enabled = true;
-            
-            [Tooltip("该相机的渲染优先级（数字越小越先渲染）")]
-            public int priority = 0;
+            if (!t || !t.enabledInChain) continue;
+            var c = t.GetComponent<Camera>();
+            if (c == cam) return true;
         }
+        return false;
+    }
 
-        [Header("Camera Chain Settings")]
-        [SerializeField]
-        [Tooltip("相机链列表，按priority排序渲染")]
-        private List<CameraEntry> cameraChain = new List<CameraEntry>();
-
-        [SerializeField]
-        [Tooltip("是否强制将相机的Depth设置为渲染顺序（0,1,2,...) 以避免顺序错误")]
-        private bool enforceCameraDepthOrder = true;
-
-        [Header("Runtime Info")]
-        [SerializeField]
-        [Tooltip("当前渲染顺序（只读）")]
-        private List<Camera> currentRenderOrder = new List<Camera>();
-
-        private static Dictionary<Camera, CameraChainManager> cameraToChainManager = new Dictionary<Camera, CameraChainManager>();
-
-        private void OnEnable()
+    private static void SortAndAssignDepth()
+    {
+        var ordered = s_Tags.Where(t => t && t.enabledInChain)
+                            .OrderBy(t => t.order).ToList();
+        for (int i = 0; i < ordered.Count; ++i)
         {
-            UpdateRenderOrder();
-            RegisterCameras();
-        }
-
-        private void OnDisable()
-        {
-            UnregisterCameras();
-        }
-
-        private void OnValidate()
-        {
-            UpdateRenderOrder();
-        }
-
-        /// <summary>
-        /// 更新渲染顺序，并刷新全局注册表。
-        /// </summary>
-        public void UpdateRenderOrder()
-        {
-            // 记录之前注册的相机供注销
-            var prevOrder = new List<Camera>(currentRenderOrder);
-
-            currentRenderOrder.Clear();
-            
-            // 按priority排序，移除null和disabled的相机
-            var sorted = cameraChain
-                .Where(e => e != null && e.enabled && e.camera != null)
-                .OrderBy(e => e.priority)
-                .Select(e => e.camera)
-                .ToList();
-
-            currentRenderOrder.AddRange(sorted);
-
-            // 可选：强制设置相机Depth与顺序一致，保证渲染顺序与链一致
-            if (enforceCameraDepthOrder)
+            var cam = ordered[i].GetComponent<Camera>();
+            if (!cam) continue;
+            cam.depth = i;
+            if (ordered[i].disableSkybox)
             {
-                for (int i = 0; i < currentRenderOrder.Count; i++)
-                {
-                    var cam = currentRenderOrder[i];
-                    if (cam != null)
-                    {
-                        cam.depth = i;
-                    }
-                }
-            }
-
-            // 刷新全局注册表
-            foreach (var cam in prevOrder)
-            {
-                if (cam != null && cameraToChainManager.TryGetValue(cam, out var mgr) && mgr == this)
-                {
-                    cameraToChainManager.Remove(cam);
-                }
-            }
-            foreach (var cam in currentRenderOrder)
-            {
-                if (cam != null)
-                {
-                    cameraToChainManager[cam] = this;
-                }
+                // 建议仅清深度或清颜色为透明/黑色，天空盒关闭
+                cam.clearFlags = CameraClearFlags.Color;
             }
         }
+    }
 
-        /// <summary>
-        /// 注册所有相机到全局字典
-        /// </summary>
-        private void RegisterCameras()
+    private static void OnBeginFrameRendering(ScriptableRenderContext _, Camera[] __)
+    {
+        // 每帧开始，重置上一相机输出引用（但不释放 RTHandle）
+        s_InitedFrame = true;
+        // 清空上一输出指针，意味着链中第一台相机不会使用背景板
+        // 第二台及之后才会使用上一台结果
+        // 注意：不释放 RTHandle 以复用内存（避免频繁分配）
+        // 仅重置“是否有上一输出”的逻辑
+        s_HasLastOutputThisFrame = false;
+    }
+
+    private static void OnEndFrameRendering(ScriptableRenderContext _, Camera[] __)
+    {
+        s_InitedFrame = false;
+        // 本方案可选择保留 RTHandle（避免GC与重分配），如果对内存敏感，也可以在此释放：
+        // ReleaseRT();
+    }
+
+    private static bool s_HasLastOutputThisFrame = false;
+
+    public static bool HasLastOutputThisFrame()
+    {
+        return s_InitedFrame && s_HasLastOutputThisFrame && s_LastOutputRT != null;
+    }
+
+    public static UnityEngine.Rendering.RTHandle GetLastOutputRT()
+    {
+        return s_LastOutputRT;
+    }
+
+    public static void MarkHasLastOutput()
+    {
+        s_HasLastOutputThisFrame = true;
+    }
+
+    public static UnityEngine.Rendering.RTHandle EnsureSharedOutputRT(int width, int height, GraphicsFormat format, int msaa)
+    {
+        // 若匹配当前参数，则直接复用
+        if (s_LastOutputRT != null && width == s_Width && height == s_Height && format == s_ColorFormat && msaa == s_MSAA)
+            return s_LastOutputRT;
+
+        ReleaseRT();
+
+        s_Width = width;
+        s_Height = height;
+        s_ColorFormat = format;
+        s_MSAA = Mathf.RoundToInt(Mathf.Log(Mathf.Max(1, msaa),2));
+
+        // 使用 RTHandles.Alloc 创建持久 RTHandle
+        s_LastOutputRT = 
+        RTHandles.Alloc(
+            width, 
+            height,
+            colorFormat:format,
+            msaaSamples:(MSAASamples)(1<<s_MSAA),
+            name:"ProgressiveChain_LastCameraOutput",
+            useDynamicScale:true
+            );
+
+        return s_LastOutputRT;
+    }
+
+    private static void ReleaseRT()
+    {
+        if (s_LastOutputRT != null)
         {
-            foreach (var cam in currentRenderOrder)
-            {
-                if (cam != null)
-                {
-                    cameraToChainManager[cam] = this;
-                }
-            }
+            UnityEngine.Rendering.RTHandles.Release(s_LastOutputRT);
+            s_LastOutputRT = null;
         }
+    }
 
-        /// <summary>
-        /// 取消注册所有相机
-        /// </summary>
-        private void UnregisterCameras()
-        {
-            foreach (var cam in currentRenderOrder)
-            {
-                if (cam != null && cameraToChainManager.ContainsKey(cam))
-                {
-                    cameraToChainManager.Remove(cam);
-                }
-            }
-        }
-
-        /// <summary>
-        /// 获取当前相机的渲染顺序
-        /// </summary>
-        public List<Camera> GetRenderOrder()
-        {
-            return new List<Camera>(currentRenderOrder);
-        }
-
-        /// <summary>
-        /// 获取指定相机在链中的索引
-        /// </summary>
-        /// <returns>索引，如果不在链中返回-1</returns>
-        public int GetCameraIndex(Camera camera)
-        {
-            return currentRenderOrder.IndexOf(camera);
-        }
-
-        /// <summary>
-        /// 获取指定相机的前一个相机
-        /// </summary>
-        /// <returns>前一个相机，如果是第一个或不在链中返回null</returns>
-        public Camera GetPreviousCamera(Camera camera)
-        {
-            int index = GetCameraIndex(camera);
-            if (index <= 0)
-                return null;
-            return currentRenderOrder[index - 1];
-        }
-
-        /// <summary>
-        /// 判断是否是链中的第一个相机
-        /// </summary>
-        public bool IsFirstCamera(Camera camera)
-        {
-            return GetCameraIndex(camera) == 0;
-        }
-
-        /// <summary>
-        /// 清空并刷新相机链。
-        /// </summary>
-        public void ClearChain()
-        {
-            cameraChain.Clear();
-            UpdateRenderOrder();
-        }
-
-        /// <summary>
-        /// 添加或更新相机项（可在运行时调用）。
-        /// </summary>
-        public void AddOrUpdateCamera(Camera camera, int priority, bool enabled = true)
-        {
-            if (camera == null)
-                return;
-
-            var entry = cameraChain.FirstOrDefault(e => e != null && e.camera == camera);
-            if (entry == null)
-            {
-                cameraChain.Add(new CameraEntry
-                {
-                    camera = camera,
-                    priority = priority,
-                    enabled = enabled
-                });
-            }
-            else
-            {
-                entry.priority = priority;
-                entry.enabled = enabled;
-            }
-
-            UpdateRenderOrder();
-        }
-
-        /// <summary>
-        /// 静态方法：获取相机所属的CameraChainManager
-        /// </summary>
-        public static CameraChainManager GetManagerForCamera(Camera camera)
-        {
-            if (camera == null)
-                return null;
-                
-            cameraToChainManager.TryGetValue(camera, out var manager);
-            return manager;
-        }
-
-        /// <summary>
-        /// 静态方法：获取相机的前一个相机
-        /// </summary>
-        public static Camera GetPreviousCameraStatic(Camera camera)
-        {
-            var manager = GetManagerForCamera(camera);
-            return manager?.GetPreviousCamera(camera);
-        }
-
-        /// <summary>
-        /// 静态方法：判断是否是链中的第一个相机
-        /// </summary>
-        public static bool IsFirstCameraStatic(Camera camera)
-        {
-            var manager = GetManagerForCamera(camera);
-            return manager?.IsFirstCamera(camera) ?? true; // 如果没有manager，视为独立相机
-        }
-
-        #region Editor Helpers
-
-#if UNITY_EDITOR
-        [ContextMenu("Auto Find Cameras in Children")]
-        private void AutoFindCameras()
-        {
-            cameraChain.Clear();
-            var cameras = GetComponentsInChildren<Camera>(true);
-            
-            for (int i = 0; i < cameras.Length; i++)
-            {
-                cameraChain.Add(new CameraEntry
-                {
-                    camera = cameras[i],
-                    enabled = true,
-                    priority = i * 100
-                });
-            }
-            
-            UpdateRenderOrder();
-            Debug.Log($"Found {cameras.Length} cameras");
-        }
-
-        [ContextMenu("Print Render Order")]
-        private void PrintRenderOrder()
-        {
-            UpdateRenderOrder();
-            Debug.Log($"Camera Chain Render Order ({currentRenderOrder.Count} cameras):");
-            for (int i = 0; i < currentRenderOrder.Count; i++)
-            {
-                Debug.Log($"  {i}: {currentRenderOrder[i].name}");
-            }
-        }
-#endif
-
-        #endregion
+    private static void ResetState()
+    {
+        s_Tags.Clear();
+        s_InitedFrame = false;
+        s_HasLastOutputThisFrame = false;
+        ReleaseRT();
+        s_Width = s_Height = 0;
+        s_MSAA = 1;
+        s_ColorFormat = GraphicsFormat.None;
     }
 }
