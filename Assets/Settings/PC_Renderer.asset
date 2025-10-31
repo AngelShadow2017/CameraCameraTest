@@ -27,11 +27,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 5ff494c49693479ebcf0eb1355203905, type: 3}
   m_Name: BackgroundFromCameraFeature
   m_EditorClassIdentifier: Assembly-CSharp::BackgroundFromCameraFeature
-  m_Active: 1
+  m_Active: 0
   settings:
     fullscreenMaterial: {fileID: 2100000, guid: 81e93fee6a1d6454db992b958ea4ca9d, type: 2}
     sourceTexturePropertyName: _SourceTex
-    passEvent: 250
+    passEvent: 0
     overrideClearFlags: 0
     clearFlags: 0
     clearColor: {r: 0, g: 0, b: 0, a: 1}

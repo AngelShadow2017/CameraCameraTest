@@ -59,10 +59,18 @@ public static class CameraChainManager
             var cam = ordered[i].GetComponent<Camera>();
             if (!cam) continue;
             cam.depth = i;
-            if (ordered[i].disableSkybox)
+            
+            // 第一个相机（最底层）使用正常的清除设置
+            if (i == 0)
             {
-                // 建议仅清深度或清颜色为透明/黑色，天空盒关闭
-                cam.clearFlags = CameraClearFlags.Color;
+                // 保持用户设置的 clearFlags，或默认使用 Skybox
+                // 不强制修改第一个相机的设置
+            }
+            else
+            {
+                // 其他相机（上层）自动设置为 Nothing（即 Uninitialized）
+                // 这样它们会继承下层相机的渲染结果
+                cam.clearFlags = CameraClearFlags.Nothing;
             }
         }
     }

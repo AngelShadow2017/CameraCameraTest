@@ -21,8 +21,8 @@ public class ProgressiveMultiCameraFeature : ScriptableRendererFeature
         {
             // 使用引擎自带Blit材质（或自定义纯拷贝材质）
             m_BlitMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/BlitCopy"));
-            // 在不清除目标的情况下直接覆盖像素，这样相机的背景就来自上一相机
-            renderPassEvent = RenderPassEvent.BeforeRenderingOpaques;
+            // 固定在 BeforeRendering 时机，这样在相机开始渲染之前就先绘制上一相机的结果作为背景
+            renderPassEvent = RenderPassEvent.BeforeRendering;
         }
 
         public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)

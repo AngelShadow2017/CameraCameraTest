@@ -11,9 +11,6 @@ public class ProgressiveCameraTag : MonoBehaviour
     [Tooltip("参与渐进式渲染链")]
     public bool enabledInChain = true;
 
-    [Tooltip("强制禁用天空盒（建议开启）")]
-    public bool disableSkybox = true;
-
     void OnEnable()
     {
         CameraChainManager.Register(this);

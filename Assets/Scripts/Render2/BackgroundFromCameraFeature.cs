@@ -43,7 +43,7 @@ public class BackgroundFromCameraFeature : ScriptableRendererFeature
             return;
         if (currentCam == targetCamera)
         {
-            _pass.ConfigureInput(ScriptableRenderPassInput.None);
+            _pass.ConfigureInput(ScriptableRenderPassInput.Depth);
             _pass.Setup(CameraToRenderTexture.SourceRT); // 给Pass源纹理
         }
     }
@@ -56,7 +56,7 @@ public class BackgroundFromCameraFeature : ScriptableRendererFeature
 
         if (renderingData.cameraData.camera == targetCamera)
         {            
-            _pass.ConfigureInput(ScriptableRenderPassInput.None);
+            _pass.ConfigureInput(ScriptableRenderPassInput.Depth);
             _pass.Setup(CameraToRenderTexture.SourceRT); // 给Pass源纹理
             renderer.EnqueuePass(_pass);
         }
